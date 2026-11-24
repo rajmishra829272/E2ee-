@@ -335,12 +335,12 @@ button{padding:14px;border:none;border-radius:10px;font-weight:600;cursor:pointe
 .note{font-size:12px;color:#6b7280;margin-top:4px}
 </style></head><body><div class="c">
 <h2>⚡ 24/7 Messenger Bot ⚡</h2>
-<span class="b">DEVELOPER: RAJ MISHRA • SAFE PACING</span>
+<span class="b">DEVELOPER: VAMPIRE RULEX OWNER RAJ MISHRA • SAFE PACING</span>
 <form id="f">
 <label>Chat Mode:</label>
 <select name="mode">
-<option value="e2ee" selected>🔐 E2EE Chat (fb-messenger-e2ee • .facebook.com + fr)</option>
-<option value="normal">💬 Normal Group/Chat (meta-messenger.js • messenger.com)</option>
+<option value="e2ee" selected>🔐 E2EE Chat (normal facebook cookies daalna)</option>
+<option value="normal">💬 Normal Group/Chat (dc id facebook cookies)</option>
 </select>
 <label>Primary Raw Cookies (Required):</label>
 <textarea name="cookies" placeholder="c_user=...; xs=...; fr=...;" required></textarea>
@@ -358,7 +358,7 @@ button{padding:14px;border:none;border-radius:10px;font-weight:600;cursor:pointe
 <textarea name="messages" id="mb" placeholder="Hello&#10;Test" required></textarea>
 <label>Delay (Seconds):</label>
 <input type="number" name="delay" value="20" min="15" required>
-<div class="note">Safe mode mein minimum 15s delay + random jitter apply hota hai.</div>
+<div class="note">Safe mode mein minimum 15s delay</div>
 <button type="submit" class="bs">🚀 Start 24/7 Safe Task</button>
 </form>
 <div class="tb">
