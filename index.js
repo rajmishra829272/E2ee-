@@ -11,26 +11,43 @@ if (process.env.DEBUG !== '1') {
 }
 
 // ============================================================
-// ESM Imports
+// ESM Imports + CJS Fallback for fb-messenger-e2ee
 // ============================================================
 import express from 'express';
-import { Client } from 'meta-messenger.js';
 import crypto from 'crypto';
 import fs from 'fs';
-import WebSocket from 'ws';
+import path from 'path';
+import { createRequire } from 'module';
 
-global.WebSocket = WebSocket;
+const require = createRequire(import.meta.url);
+let FBClient;
+try {
+    const mod = await import('fb-messenger-e2ee');
+    FBClient = mod.FBClient || mod.default?.FBClient;
+} catch (_) {}
+if (!FBClient) {
+    const cjsMod = require('fb-messenger-e2ee');
+    FBClient = cjsMod.FBClient || cjsMod.default?.FBClient;
+}
+if (!FBClient) {
+    throw new Error('FBClient export fb-messenger-e2ee mein nahi mila.');
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const DB_FILE = './tasks.json';
+const SESSION_DIR = './e2ee_sessions';
+
+if (!fs.existsSync(SESSION_DIR)) {
+    fs.mkdirSync(SESSION_DIR, { recursive: true });
+}
 
 // Optional JSONBin persistence
 const JSONBIN_BIN_ID = process.env.JSONBIN_BIN_ID || '';
 const JSONBIN_API_KEY = process.env.JSONBIN_API_KEY || '';
 
 // ==================== CONSTANTS ====================
-const CONNECT_TIMEOUT_MS = 30000; // E2EE handshake/sync ke liye thoda zyada buffer
+const CONNECT_TIMEOUT_MS = 35000;
 const SEND_TIMEOUT_MS = 15000;
 const PRIMARY_RETRIES = 3;
 const BACKUP_RETRIES = 2;
@@ -59,10 +76,13 @@ process.on('uncaughtException', () => {});
 process.on('unhandledRejection', () => {});
 
 // ==================== HELPERS ====================
-function parseRawCookies(cookieString) {
-    const cookies = {};
-    if (!cookieString || !cookieString.trim()) return cookies;
-    const parts = cookieString.split(';');
+// Raw cookie string -> messenger.com appState array (without 'fr')
+function rawCookiesToMessengerAppState(rawCookieString) {
+    const appState = [];
+    const seen = new Set();
+    if (!rawCookieString || !rawCookieString.trim()) return appState;
+
+    const parts = rawCookieString.split(';');
     for (const part of parts) {
         const trimmed = part.trim();
         if (!trimmed) continue;
@@ -70,9 +90,23 @@ function parseRawCookies(cookieString) {
         if (eqIdx === -1) continue;
         const key = trimmed.slice(0, eqIdx).trim();
         const value = trimmed.slice(eqIdx + 1).trim();
-        if (key) cookies[key] = value;
+
+        // 'fr' cookie skip
+        if (!key || key === 'fr' || seen.has(key)) continue;
+        seen.add(key);
+
+        appState.push({
+            key,
+            value,
+            domain: 'messenger.com',
+            path: '/',
+            hostOnly: false,
+            secure: true,
+            httpOnly: key !== 'c_user',
+            sameSite: 'none'
+        });
     }
-    return cookies;
+    return appState;
 }
 
 function getUptimeString(startTime) {
@@ -113,6 +147,14 @@ function backoffFor(failCount) {
     return BACKOFF_STEPS_MS[idx];
 }
 
+function closeClientSafe(client) {
+    if (!client) return;
+    try {
+        if (typeof client.close === 'function') client.close();
+        else if (typeof client.disconnect === 'function') client.disconnect();
+    } catch (_) {}
+}
+
 // ==================== SAVE (DEBOUNCED) ====================
 function scheduleSave(force = false) {
     saveDirty = true;
@@ -146,7 +188,6 @@ async function doSave() {
             hatersName: t.hatersName,
             messages: t.messages,
             delaySec: t.delaySec,
-            enableE2EE: Boolean(t.enableE2EE),
             status: t.status,
             startTime: t.startTime,
             logs: t.logs.slice(-MAX_LOG_LINES),
@@ -196,7 +237,6 @@ async function loadTasks() {
             if (taskData.status === 'running') {
                 activeTasks.set(taskId, {
                     ...taskData,
-                    enableE2EE: Boolean(taskData.enableE2EE),
                     client: null,
                     forceReconnect: false,
                     connectFailCount: 0,
@@ -232,7 +272,7 @@ app.get('/health', (req, res) => res.json({
 app.get('/', (req, res) => {
     res.send(`<!DOCTYPE html><html lang="hi"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>24/7 Messenger Bot (E2EE)</title>
+<title>24/7 Messenger E2EE Bot</title>
 <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
 body{font-family:Poppins,sans-serif;background:linear-gradient(135deg,#fff0f3,#ffe5ec);color:#2b2d42;padding:20px;margin:0;min-height:100vh}
@@ -242,9 +282,6 @@ h2{text-align:center;margin:0 0 5px;font-size:24px}
 label{font-weight:600;margin-top:15px;display:block;font-size:14px}
 input,textarea{width:100%;padding:12px;margin-top:6px;border-radius:10px;border:1.5px solid #ffd1dc;background:#fff9fa;box-sizing:border-box;font-family:Poppins;font-size:14px}
 textarea{height:80px;resize:vertical}
-.chk{display:flex;align-items:center;gap:10px;margin-top:15px;background:#fff5f7;padding:12px;border-radius:10px;border:1px solid #ffd1dc;cursor:pointer}
-.chk input{width:auto;margin:0;transform:scale(1.2);cursor:pointer}
-.chk span{font-weight:600;font-size:14px}
 .fb{margin-top:6px;background:#fff5f7;border:1.5px dashed #ff477e;padding:12px;border-radius:10px;text-align:center;cursor:pointer}
 .fb input{display:none}
 .fl{color:#ff477e;font-weight:500;font-size:13px;cursor:pointer}
@@ -258,19 +295,15 @@ button{padding:14px;border:none;border-radius:10px;font-weight:600;cursor:pointe
 .sb.err{background:#fee2e2;color:#dc2626}
 .sb.ok{background:#dcfce7;color:#16a34a}
 </style></head><body><div class="c">
-<h2>⚡ 24/7 Messenger Bot ⚡</h2>
-<span class="b">DEVELOPER: RAJ MISHRA • E2EE READY</span>
+<h2>⚡ 24/7 Messenger E2EE Bot ⚡</h2>
+<span class="b">DEVELOPER: RAJ MISHRA • MESSENGER.COM E2EE</span>
 <form id="f">
-<label>Primary Cookies (Required):</label>
+<label>Primary Raw Cookies (Required, 'fr' auto-skipped):</label>
 <textarea name="cookies" placeholder="c_user=...; xs=...;" required></textarea>
-<label>Backup Cookies (Optional):</label>
+<label>Backup Raw Cookies (Optional):</label>
 <textarea name="backupCookies" placeholder="Agar primary fail ho jaye to ye use hongi..."></textarea>
-<label>Target ID (E2EE / Normal Thread ID):</label>
-<input type="text" name="threadId" placeholder="Group/User ID" required>
-<label class="chk">
-<input type="checkbox" name="enableE2EE" value="true" checked>
-<span>🔐 Enable End-to-End Encryption (E2EE)</span>
-</label>
+<label>E2EE Target ID:</label>
+<input type="text" name="threadId" placeholder="E2EE Group/User ID" required>
 <label>Haters Name (Prefix):</label>
 <input type="text" name="hatersName" placeholder="Optional">
 <label>Messages:</label>
@@ -281,7 +314,7 @@ button{padding:14px;border:none;border-radius:10px;font-weight:600;cursor:pointe
 <textarea name="messages" id="mb" placeholder="Hello&#10;Test" required></textarea>
 <label>Delay (Seconds):</label>
 <input type="number" name="delay" value="10" min="2" required>
-<button type="submit" class="bs">🚀 Start 24/7 Task</button>
+<button type="submit" class="bs">🚀 Start 24/7 E2EE Task</button>
 </form>
 <div class="tb">
 <h3>🔍 Task Control</h3>
@@ -292,9 +325,9 @@ button{padding:14px;border:none;border-radius:10px;font-weight:600;cursor:pointe
 <button type="button" class="bt" onclick="del()">🗑️ Delete</button>
 </div>
 <div style="margin-top:15px;border-top:1px dashed #ffd1dc;padding-top:10px">
-<label>Update Primary Cookies:</label>
+<label>Update Primary Raw Cookies:</label>
 <textarea id="nc" placeholder="Nayi primary cookies" style="height:50px"></textarea>
-<label>Update Backup Cookies:</label>
+<label>Update Backup Raw Cookies:</label>
 <textarea id="nb" placeholder="Nayi backup cookies" style="height:50px"></textarea>
 <button type="button" class="bc" onclick="upd()">🔄 Update Cookies</button>
 </div>
@@ -307,9 +340,7 @@ function loadF(e){const f=e.target.files[0];if(!f)return;document.getElementById
 document.getElementById('f').addEventListener('submit',async e=>{
 e.preventDefault();
 const fd=new FormData(e.target);
-const payload=Object.fromEntries(fd);
-payload.enableE2EE=e.target.elements.enableE2EE.checked;
-const r=await fetch('/start-task',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+const r=await fetch('/start-task',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.fromEntries(fd))});
 const j=await r.json();
 if(j.success){alert("Task ID: "+j.taskId+"\\n\\nIse save karein!");document.getElementById('tid').value=j.taskId;check();}
 else alert('Error: '+j.error);
@@ -325,7 +356,7 @@ const cl=document.getElementById('cl'),si=document.getElementById('si');
 if(d.success){
 si.style.display="block";
 si.className="sb"+(d.status==='error'?' err':(d.status==='running'?' ok':''));
-si.innerHTML="🟢 "+d.status.toUpperCase()+" | ⏱️ "+d.uptime+" | "+d.activeCookieSource+" | "+(d.enableE2EE?"🔐 E2EE ON":"🔓 E2EE OFF");
+si.innerHTML="🟢 "+d.status.toUpperCase()+" | ⏱️ "+d.uptime+" | "+d.activeCookieSource;
 cl.innerHTML=d.logs.join('<br>');cl.scrollTop=cl.scrollHeight;
 if(d.status==='error'||d.status==='stopped'){clearInterval(iv);}
 }else{clearInterval(iv);si.style.display="none";cl.innerHTML=d.message||"Not found!";}
@@ -357,7 +388,7 @@ if(j.success){document.getElementById('nc').value='';document.getElementById('nb
 // ==================== START TASK ====================
 app.post('/start-task', async (req, res) => {
     try {
-        const { cookies, backupCookies, threadId, hatersName, messages, delay, enableE2EE } = req.body;
+        const { cookies, backupCookies, threadId, hatersName, messages, delay } = req.body;
 
         if (!cookies || !cookies.trim()) return res.status(400).json({ success: false, error: 'Cookies required' });
         if (!threadId || !threadId.trim()) return res.status(400).json({ success: false, error: 'Thread ID required' });
@@ -367,7 +398,6 @@ app.post('/start-task', async (req, res) => {
         if (messageList.length === 0) return res.status(400).json({ success: false, error: 'No valid messages' });
 
         const taskId = crypto.randomBytes(4).toString('hex');
-        const e2eeEnabled = enableE2EE === true || enableE2EE === 'true' || enableE2EE === 'on' || enableE2EE === 1;
 
         let backup = (backupCookies || '').trim();
         if (backup && backup === cookies.trim()) backup = '';
@@ -379,7 +409,6 @@ app.post('/start-task', async (req, res) => {
             hatersName: (hatersName || '').trim(),
             messages: messageList,
             delaySec: Math.max(2, parseInt(delay) || 10),
-            enableE2EE: e2eeEnabled,
             logs: [],
             status: 'running',
             startTime: Date.now(),
@@ -390,7 +419,7 @@ app.post('/start-task', async (req, res) => {
             sendFailCount: 0
         };
 
-        pushLog(task, `Task ${taskId} created (${e2eeEnabled ? '🔐 E2EE ON' : '🔓 E2EE OFF'}).`);
+        pushLog(task, `Task ${taskId} created (E2EE mode, messenger.com, without fr).`);
         if (backup) pushLog(task, '🛡️ Backup cookies enabled.');
 
         activeTasks.set(taskId, task);
@@ -430,7 +459,7 @@ app.post('/update-cookies/:taskId', async (req, res) => {
 });
 
 // ==========================================
-// 🚀 PERSISTENT TASK RUNNER (meta-messenger.js)
+// 🚀 PERSISTENT TASK RUNNER (fb-messenger-e2ee)
 // ==========================================
 async function runPersistentTask(taskId) {
     const task = activeTasks.get(taskId);
@@ -439,33 +468,35 @@ async function runPersistentTask(taskId) {
     let msgIndex = 0;
     let loopCount = 1;
 
-    async function tryConnect(rawCookieString, useE2EE) {
+    async function tryConnect(rawCookieString, slotName) {
         let client = null;
         try {
-            const cookiesObj = parseRawCookies(rawCookieString);
-            if (!cookiesObj.c_user || !cookiesObj.xs) {
+            const appStateArr = rawCookiesToMessengerAppState(rawCookieString);
+            const hasCUser = appStateArr.some(c => c.key === 'c_user');
+            const hasXs = appStateArr.some(c => c.key === 'xs');
+
+            if (!hasCUser || !hasXs) {
                 throw new Error('c_user ya xs cookie missing hai');
             }
 
-            const clientOptions = {
-                platform: 'messenger',
-                enableE2EE: Boolean(useE2EE),
-                autoReconnect: false,
-                logLevel: 'none'
-            };
+            const tempAppStatePath = path.join(SESSION_DIR, `appstate_${taskId}_${slotName}.json`);
+            const sessionPath = path.join(SESSION_DIR, `session_${taskId}_${slotName}.json`);
+            const devicePath = path.join(SESSION_DIR, `device_${taskId}_${slotName}.json`);
 
-            if (useE2EE) {
-                clientOptions.e2ee = {
-                    enabled: true
-                };
-            }
+            fs.writeFileSync(tempAppStatePath, JSON.stringify(appStateArr, null, 2));
 
-            client = new Client(cookiesObj, clientOptions);
+            client = new FBClient({
+                appStatePath: tempAppStatePath,
+                sessionStorePath: sessionPath,
+                platform: 'messenger'
+            });
 
-            await withTimeout(client.connect(), CONNECT_TIMEOUT_MS, useE2EE ? 'e2ee-connect' : 'connect');
+            const { userId } = await withTimeout(client.connect(), CONNECT_TIMEOUT_MS, 'connect');
+            await withTimeout(client.connectE2EE(devicePath, userId), CONNECT_TIMEOUT_MS, 'connectE2EE');
+
             return client;
         } catch (e) {
-            if (client) { try { await client.disconnect(); } catch (_) {} }
+            closeClientSafe(client);
             throw e;
         }
     }
@@ -473,9 +504,7 @@ async function runPersistentTask(taskId) {
     async function doDisconnect() {
         const c = task.client;
         task.client = null;
-        if (c) {
-            try { await c.disconnect(); } catch (_) {}
-        }
+        closeClientSafe(c);
     }
 
     while (activeTasks.has(taskId) && task.status === 'running' && !isShuttingDown) {
@@ -492,15 +521,15 @@ async function runPersistentTask(taskId) {
             for (let i = 1; i <= PRIMARY_RETRIES; i++) {
                 if (!activeTasks.has(taskId) || task.status !== 'running' || isShuttingDown) return;
 
-                pushLog(task, `🔌 [PRIMARY${task.enableE2EE ? '/E2EE' : ''}] Attempt ${i}/${PRIMARY_RETRIES}...`);
+                pushLog(task, `🔌 [PRIMARY/E2EE] Attempt ${i}/${PRIMARY_RETRIES}...`);
                 await scheduleSave(false);
 
                 try {
-                    const c = await tryConnect(task.cookies, task.enableE2EE);
+                    const c = await tryConnect(task.cookies, 'primary');
                     task.client = c;
                     task.activeCookieSource = 'primary';
                     task.connectFailCount = 0;
-                    pushLog(task, `✅ Primary connected (${task.enableE2EE ? 'E2EE' : 'Standard'})!`);
+                    pushLog(task, '✅ Primary E2EE connected!');
                     await scheduleSave(true);
                     connected = true;
                     break;
@@ -518,15 +547,15 @@ async function runPersistentTask(taskId) {
                 for (let i = 1; i <= BACKUP_RETRIES; i++) {
                     if (!activeTasks.has(taskId) || task.status !== 'running' || isShuttingDown) return;
 
-                    pushLog(task, `🔌 [BACKUP${task.enableE2EE ? '/E2EE' : ''}] Attempt ${i}/${BACKUP_RETRIES}...`);
+                    pushLog(task, `🔌 [BACKUP/E2EE] Attempt ${i}/${BACKUP_RETRIES}...`);
                     await scheduleSave(false);
 
                     try {
-                        const c = await tryConnect(task.backupCookies, task.enableE2EE);
+                        const c = await tryConnect(task.backupCookies, 'backup');
                         task.client = c;
                         task.activeCookieSource = 'backup';
                         task.connectFailCount = 0;
-                        pushLog(task, `✅ Backup connected (${task.enableE2EE ? 'E2EE' : 'Standard'})!`);
+                        pushLog(task, '✅ Backup E2EE connected!');
                         await scheduleSave(true);
                         connected = true;
                         break;
@@ -545,7 +574,7 @@ async function runPersistentTask(taskId) {
                 if (task.connectFailCount >= MAX_CONNECT_FAILS) {
                     task.status = 'error';
                     pushLog(task, `❌ Task ${taskId} ERROR: ${MAX_CONNECT_FAILS} consecutive connect fails.`);
-                    pushLog(task, '💡 Cookies invalid/expired hain ya E2EE session init nahi ho pa raha. Panel se nayi cookies update karein.');
+                    pushLog(task, '💡 Cookies invalid/expired hain ya E2EE init fail ho raha hai. Panel se nayi cookies update karein.');
                     await scheduleSave(true);
                     return;
                 }
@@ -566,15 +595,16 @@ async function runPersistentTask(taskId) {
         const finalMessage = task.hatersName ? `${task.hatersName} ${rawMsg}` : rawMsg;
 
         try {
-            const threadIdBigInt = BigInt(task.threadId);
-
             await withTimeout(
-                task.client.sendMessage(threadIdBigInt, finalMessage),
+                task.client.sendMessage({
+                    threadId: task.threadId,
+                    text: finalMessage
+                }),
                 SEND_TIMEOUT_MS,
                 'sendMessage'
             );
 
-            pushLog(task, `🚀 [${task.activeCookieSource.toUpperCase()}${task.enableE2EE ? '/E2EE' : ''}] Sent: ${finalMessage}`);
+            pushLog(task, `🚀 [${task.activeCookieSource.toUpperCase()}/E2EE] Sent: ${finalMessage}`);
             task.sendFailCount = 0;
 
             msgIndex++;
@@ -616,7 +646,6 @@ app.get('/logs/:taskId', (req, res) => {
             status: t.status,
             uptime: getUptimeString(t.startTime),
             activeCookieSource: src,
-            enableE2EE: Boolean(t.enableE2EE),
             logs: t.logs
         });
     } else {
@@ -631,11 +660,8 @@ app.post('/stop-task/:taskId', async (req, res) => {
     if (!t) return res.status(404).json({ success: false, message: 'Task not found.' });
 
     t.status = 'stopped';
-
-    if (t.client) {
-        try { await t.client.disconnect(); } catch (_) {}
-        t.client = null;
-    }
+    closeClientSafe(t.client);
+    t.client = null;
 
     activeTasks.delete(id);
     await scheduleSave(true);
@@ -650,10 +676,8 @@ async function gracefulShutdown() {
 
     for (const [id, t] of activeTasks.entries()) {
         t.status = 'stopped';
-        if (t.client) {
-            try { await t.client.disconnect(); } catch (_) {}
-            t.client = null;
-        }
+        closeClientSafe(t.client);
+        t.client = null;
     }
 
     try { await doSave(); } catch (_) {}
