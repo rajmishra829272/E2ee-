@@ -1,0 +1,21 @@
+{
+  "name": "messenger-bot-247",
+  "version": "1.0.0",
+  "description": "24/7 Messenger Bot using meta-messenger.js",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "DEBUG=1 node index.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "meta-messenger.js": "^1.1.0",
+    "ws": "^8.18.0"
+  },
+  "author": "RAJ MISHRA",
+  "license": "MIT"
+}
