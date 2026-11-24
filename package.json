@@ -12,6 +12,6 @@
   },
   "dependencies": {
     "express": "^4.19.2",
-    "fb-messenger-e2ee": "^1.0.0"
+    "fb-messenger-e2ee": "latest"
   }
 }
