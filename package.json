@@ -1,6 +1,7 @@
 {
   "name": "messenger-bot-247",
   "version": "1.0.0",
+  "description": "24/7 Messenger Bot (E2EE + Normal)",
   "type": "module",
   "main": "index.js",
   "scripts": {
@@ -8,10 +9,14 @@
     "dev": "DEBUG=1 node index.js"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=18.0.0"
   },
   "dependencies": {
     "express": "^4.19.2",
-    "fb-messenger-e2ee": "latest"
-  }
+    "fb-messenger-e2ee": "latest",
+    "meta-messenger.js": "^1.1.0",
+    "ws": "^8.18.0"
+  },
+  "author": "RAJ MISHRA",
+  "license": "MIT"
 }
