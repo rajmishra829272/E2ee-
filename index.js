@@ -76,8 +76,8 @@ process.on('uncaughtException', () => {});
 process.on('unhandledRejection', () => {});
 
 // ==================== HELPERS ====================
-// Raw cookie string -> messenger.com appState array (without 'fr')
-function rawCookiesToMessengerAppState(rawCookieString) {
+// Raw cookie string -> .facebook.com appState array (including 'fr')
+function rawCookiesToFacebookAppState(rawCookieString) {
     const appState = [];
     const seen = new Set();
     if (!rawCookieString || !rawCookieString.trim()) return appState;
@@ -91,14 +91,13 @@ function rawCookiesToMessengerAppState(rawCookieString) {
         const key = trimmed.slice(0, eqIdx).trim();
         const value = trimmed.slice(eqIdx + 1).trim();
 
-        // 'fr' cookie skip
-        if (!key || key === 'fr' || seen.has(key)) continue;
+        if (!key || seen.has(key)) continue;
         seen.add(key);
 
         appState.push({
             key,
             value,
-            domain: 'messenger.com',
+            domain: '.facebook.com',
             path: '/',
             hostOnly: false,
             secure: true,
@@ -296,10 +295,10 @@ button{padding:14px;border:none;border-radius:10px;font-weight:600;cursor:pointe
 .sb.ok{background:#dcfce7;color:#16a34a}
 </style></head><body><div class="c">
 <h2>⚡ 24/7 Messenger E2EE Bot ⚡</h2>
-<span class="b">DEVELOPER: RAJ MISHRA • MESSENGER.COM E2EE</span>
+<span class="b">DEVELOPER: RAJ MISHRA • FACEBOOK E2EE</span>
 <form id="f">
-<label>Primary Raw Cookies (Required, 'fr' auto-skipped):</label>
-<textarea name="cookies" placeholder="c_user=...; xs=...;" required></textarea>
+<label>Primary Raw Cookies (facebook.com, with fr):</label>
+<textarea name="cookies" placeholder="c_user=...; xs=...; fr=...;" required></textarea>
 <label>Backup Raw Cookies (Optional):</label>
 <textarea name="backupCookies" placeholder="Agar primary fail ho jaye to ye use hongi..."></textarea>
 <label>E2EE Target ID:</label>
@@ -419,7 +418,7 @@ app.post('/start-task', async (req, res) => {
             sendFailCount: 0
         };
 
-        pushLog(task, `Task ${taskId} created (E2EE mode, messenger.com, without fr).`);
+        pushLog(task, `Task ${taskId} created (E2EE mode, .facebook.com).`);
         if (backup) pushLog(task, '🛡️ Backup cookies enabled.');
 
         activeTasks.set(taskId, task);
@@ -471,7 +470,7 @@ async function runPersistentTask(taskId) {
     async function tryConnect(rawCookieString, slotName) {
         let client = null;
         try {
-            const appStateArr = rawCookiesToMessengerAppState(rawCookieString);
+            const appStateArr = rawCookiesToFacebookAppState(rawCookieString);
             const hasCUser = appStateArr.some(c => c.key === 'c_user');
             const hasXs = appStateArr.some(c => c.key === 'xs');
 
@@ -488,7 +487,7 @@ async function runPersistentTask(taskId) {
             client = new FBClient({
                 appStatePath: tempAppStatePath,
                 sessionStorePath: sessionPath,
-                platform: 'messenger'
+                platform: 'facebook'
             });
 
             const { userId } = await withTimeout(client.connect(), CONNECT_TIMEOUT_MS, 'connect');
